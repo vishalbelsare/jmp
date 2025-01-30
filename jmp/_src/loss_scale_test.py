@@ -14,6 +14,8 @@
 # ==============================================================================
 """Tests for jmp._src.loss_scale."""
 
+import warnings
+
 from absl.testing import absltest
 from absl.testing import parameterized
 import jax
@@ -34,9 +36,9 @@ class LossScaleTest(parameterized.TestCase):
       ("StaticLossScale(2)", jmp.StaticLossScale, 2),
       ("StaticLossScale(3)", jmp.StaticLossScale, 3),
       ("StaticLossScale(4)", jmp.StaticLossScale, 4),
-      ("DynamicLossScale(2)", jmp.DynamicLossScale, 2),
-      ("DynamicLossScale(3)", jmp.DynamicLossScale, 3),
-      ("DynamicLossScale(4)", jmp.DynamicLossScale, 4),
+      ("DynamicLossScale(2)", jmp.DynamicLossScale, 2.),
+      ("DynamicLossScale(3)", jmp.DynamicLossScale, 3.),
+      ("DynamicLossScale(4)", jmp.DynamicLossScale, 4.),
   )
   def test_static_loss_scale(self, cls, scale):
     loss_scale = cls(scale)
@@ -47,11 +49,16 @@ class LossScaleTest(parameterized.TestCase):
 
   @parameterized.named_parameters(
       ("NoOpLossScale", jmp.NoOpLossScale),
-      ("StaticLossScale", lambda: jmp.StaticLossScale(0)),
+      ("StaticLossScale", lambda: jmp.StaticLossScale(0)),  # pytype: disable=wrong-arg-types  # jax-ndarray
   )
   def test_static_empty_trees(self, create):
     loss_scale = create()
-    self.assertEmpty(jax.tree_leaves(loss_scale))
+    self.assertEmpty(jax.tree_util.tree_leaves(loss_scale))
+
+  def test_dynamic_loss_scale_no_warnings(self):
+    with warnings.catch_warnings(record=True) as logged_warnings:
+      jmp.DynamicLossScale(2. ** 15)  # pytype: disable=wrong-arg-types  # jax-ndarray
+    self.assertEmpty(logged_warnings)
 
   def test_dynamic_loss_scale_tree(self):
     scale = jnp.ones([])
@@ -59,7 +66,7 @@ class LossScaleTest(parameterized.TestCase):
     period = 2000
     factor = 2
     loss_scale = jmp.DynamicLossScale(scale, counter, period, factor)
-    self.assertEqual(jax.tree_leaves(loss_scale), [scale, counter])
+    self.assertEqual(jax.tree_util.tree_leaves(loss_scale), [scale, counter])
     self.assertEqual(jax.tree_util.tree_map(lambda x: x, loss_scale),
                      loss_scale)
 
@@ -98,7 +105,7 @@ class LossScaleTest(parameterized.TestCase):
       self.assertEqual(loss_scale.period, period)
       self.assertEqual(loss_scale.factor, factor)
 
-  @parameterized.parameters((20, 2, .3125), (30, 3, .37), (5, 2, 0))
+  @parameterized.parameters((20, 2, .3125), (30, 3, .37), (5., 2., 0.))
   def test_dynamic_loss_scale_explicit_min_loss_scale(self, period, factor,
                                                       min_loss_scale):
     grads_finite = jnp.bool_(False)
@@ -119,6 +126,17 @@ class LossScaleTest(parameterized.TestCase):
 
   def test_dynamic_loss_scale_adjust_requires_scalar_input(self):
     pass
+
+  def test_dynamic_loss_scale_raises_type_error_on_int_loss_scale(self):
+    expected_message = "Expected floating type for loss_scale"
+    with self.assertWarnsRegex(Warning, expected_message):
+      jmp.DynamicLossScale(jnp.asarray(1, dtype=jnp.int32))
+
+  def test_dynamic_loss_scale_raises_type_error_on_int_min_loss_scale(self):
+    expected_message = "Expected floating type for min_loss_scale"
+    with self.assertWarnsRegex(Warning, expected_message):
+      jmp.DynamicLossScale(jnp.asarray(1, dtype=jnp.float32),
+                           min_loss_scale=jnp.asarray(1, dtype=jnp.int32))
 
   @parameterized.parameters(jnp.inf, jnp.nan)
   def test_all_finite(self, non_finite):
